@@ -1,0 +1,6 @@
+{
+  "name": "Quản lý Trung tâm Giáo dục",
+  "description": "Ứng dụng quản lý trung tâm giáo dục: lớp học, học sinh, điểm danh, điểm số, học phí và trang báo cáo cho phụ huynh",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
