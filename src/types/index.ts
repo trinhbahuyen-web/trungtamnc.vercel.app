@@ -194,15 +194,20 @@ export interface TuitionStudentRow {
   fullName: string;
   sessionsTotal: number;
   sessionsAttended: number;
+  sessionsPreviouslyPaid?: number;
+  sessionsToPay?: number;
   sessionsAbsent: number;
   feePerSession: number;
   tuition: number;
   paymentStatus?: TuitionPaymentStatus;
   paidAt?: Date;
   transferNote?: string;
+  paidAmount?: number;
+  confirmedByName?: string;
 }
 
 export interface TuitionData {
+
   classInfo: ClassItem;
   students: TuitionStudentRow[];
 }

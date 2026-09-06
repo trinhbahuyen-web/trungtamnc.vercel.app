@@ -902,25 +902,68 @@ export const setTuitionPaymentStatus = async (params: {
   confirmedBy?: string;
   confirmedByName?: string;
   note?: string;
+  startDate?: string;
+  endDate?: string;
 }) => {
   const id = paymentDocId(params.classId, params.monthKey, params.studentId);
-  await setDoc(
-    doc(db, 'tuitionPayments', id),
-    {
-      classId: params.classId,
-      studentId: params.studentId,
-      monthKey: params.monthKey,
-      amount: Number(params.amount) || 0,
-      transferNote: params.transferNote || '',
-      status: params.status,
-      confirmedAt: params.status === 'PAID' ? serverTimestamp() : null,
-      confirmedBy: params.status === 'PAID' ? params.confirmedBy || '' : '',
-      confirmedByName: params.status === 'PAID' ? params.confirmedByName || '' : '',
-      note: params.note || '',
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  );
+  const paymentRef = doc(db, 'tuitionPayments', id);
+  const paymentData = {
+    classId: params.classId,
+    studentId: params.studentId,
+    monthKey: params.monthKey,
+    amount: Number(params.amount) || 0,
+    transferNote: params.transferNote || '',
+    status: params.status,
+    confirmedAt: params.status === 'PAID' ? serverTimestamp() : null,
+    confirmedBy: params.status === 'PAID' ? params.confirmedBy || '' : '',
+    confirmedByName: params.status === 'PAID' ? params.confirmedByName || '' : '',
+    note: params.note || '',
+    updatedAt: serverTimestamp(),
+  };
+
+  if (params.startDate && params.endDate) {
+    const batch = writeBatch(db);
+    batch.set(paymentRef, paymentData, { merge: true });
+
+    const attSnap = await getDocs(
+      query(
+        collection(db, 'attendance'),
+        where('classId', '==', params.classId),
+        where('studentId', '==', params.studentId)
+      )
+    );
+
+    attSnap.docs.forEach((docSnap) => {
+      const data = docSnap.data();
+      if (data.date >= params.startDate! && data.date <= params.endDate!) {
+        if (data.present === true) {
+          if (params.status === 'PAID') {
+            // Chỉ đánh dấu các buổi CHƯA ĐƯỢC THU hoặc là thu cho chính đợt này
+            if (!data.tuitionPaid || data.tuitionBatch === params.monthKey) {
+              batch.update(docSnap.ref, {
+                tuitionPaid: true,
+                tuitionBatch: params.monthKey,
+                tuitionPaidAt: serverTimestamp()
+              });
+            }
+          } else {
+            // HỦY THU: Chỉ hủy những buổi học đã được gán nhãn cho đợt thanh toán này
+            if (data.tuitionBatch === params.monthKey) {
+              batch.update(docSnap.ref, {
+                tuitionPaid: false,
+                tuitionBatch: deleteField(),
+                tuitionPaidAt: deleteField()
+              });
+            }
+          }
+        }
+      }
+    });
+
+    await batch.commit();
+  } else {
+    await setDoc(paymentRef, paymentData, { merge: true });
+  }
 };
 
 // ===================================================================
@@ -989,6 +1032,8 @@ export const getTuitionForMonth = async (
       paymentStatus: payment?.status || 'UNPAID',
       paidAt: payment?.confirmedAt,
       transferNote: payment?.transferNote,
+      paidAmount: payment?.amount || 0,
+      confirmedByName: payment?.confirmedByName,
     };
   });
 

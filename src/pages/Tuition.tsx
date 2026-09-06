@@ -253,6 +253,7 @@ export default function Tuition() {
       const attSnap = await getDocs(query(collection(db, 'attendance'), where('classId', '==', selectedClass)));
       const validDates = new Set<string>(); 
       const studentAttendedDates = new Map<string, Set<string>>(); 
+      const studentPaidDates = new Map<string, Set<string>>();
 
       attSnap.docs.forEach(doc => {
         const data = doc.data();
@@ -261,6 +262,13 @@ export default function Tuition() {
           if (data.studentId) {
             if (!studentAttendedDates.has(data.studentId)) studentAttendedDates.set(data.studentId, new Set());
             studentAttendedDates.get(data.studentId)!.add(data.date);
+            
+            // Nếu buổi học này đã được thu (và không phải thuộc đợt hiện tại đang xét mà bị hủy)
+            // Để đơn giản, cứ buổi nào có tuitionPaid = true thì coi như đã thu.
+            if (data.tuitionPaid === true) {
+               if (!studentPaidDates.has(data.studentId)) studentPaidDates.set(data.studentId, new Set());
+               studentPaidDates.get(data.studentId)!.add(data.date);
+            }
           }
         }
       });
@@ -270,22 +278,46 @@ export default function Tuition() {
 
       baseTuition.students = Array.from(studentMap.values()).map(student => {
         const attendedSet = studentAttendedDates.get(student.studentId);
-        const actualAttended = attendedSet ? attendedSet.size : 0; 
+        const actualAttended = attendedSet ? attendedSet.size : 0;
+        
+        const paidSet = studentPaidDates.get(student.studentId);
+        let previouslyPaidCount = paidSet ? paidSet.size : 0;
+
+        // Fallback cho dữ liệu cũ (không có tuitionPaid trong bảng attendance)
+        if (previouslyPaidCount === 0 && student.paidAmount > 0 && feePerSession > 0) {
+            previouslyPaidCount = Math.round(student.paidAmount / feePerSession);
+        }
+
+        let toPayCount = actualAttended - previouslyPaidCount;
+        if (toPayCount < 0) toPayCount = 0;
+        
+        const sessionsForCalculation = toPayCount;
         
         const stuGlobal = allStudents.find(s => s.id === student.studentId);
         const discount = (stuGlobal as any)?.discount || 0;
         const note = stuGlobal?.note || '';
-
-        const rawTuition = actualAttended * feePerSession;
+        const rawTuition = sessionsForCalculation * feePerSession;
         const finalTuition = rawTuition * (1 - discount / 100);
+
+        let currentStatus = student.paymentStatus;
+        if (toPayCount > 0) {
+            currentStatus = 'UNPAID';
+        } else if (actualAttended > 0 && toPayCount === 0) {
+            currentStatus = 'PAID';
+        } else {
+            currentStatus = 'UNPAID';
+        }
 
         return {
           ...student,
           sessionsAttended: actualAttended,
+          sessionsPreviouslyPaid: previouslyPaidCount,
+          sessionsToPay: toPayCount,
           sessionsTotal: totalSessions,
           tuition: finalTuition,
           discount,
-          note
+          note,
+          paymentStatus: currentStatus
         };
       });
 
@@ -1049,6 +1081,8 @@ export default function Tuition() {
         status: paid ? 'PAID' : 'UNPAID',
         confirmedBy: user.id,
         confirmedByName: user.name,
+        startDate: startDate,
+        endDate: endDate,
       });
       toast(paid ? 'Đã lưu xác nhận hoàn thành học phí' : 'Đã hủy xác nhận đã thu', 'success');
       await loadTuition();
@@ -1097,6 +1131,8 @@ export default function Tuition() {
                 status: 'PAID',
                 confirmedBy: user.id,
                 confirmedByName: 'Hệ thống tự động (SePay)',
+                startDate: startDate,
+                endDate: endDate,
               });
 
               await updateDoc(doc(db, 'sepay_transactions', docSnap.id), { 
@@ -1164,6 +1200,8 @@ export default function Tuition() {
             <td>${st.fullName}</td>
             <td style="text-align: center; mso-number-format:'\@';">${phoneStr}</td>
             <td style="text-align: center;">${st.sessionsAttended}</td>
+            <td style="text-align: center; color: #059669;">${st.sessionsPreviouslyPaid > 0 ? st.sessionsPreviouslyPaid : '-'}</td>
+            <td style="text-align: center; color: #92400e; font-weight: bold;">${st.sessionsToPay}</td>
             <td style="text-align: center;">${st.discount ? st.discount + '%' : ''}</td>
             <td style="text-align: right; font-weight: bold;">${fmtCurrency(st.tuition)}</td>
             <td style="text-align: center; color: ${isPaid ? '#059669' : '#dc2626'}; font-weight: bold;">${isPaid ? 'Đã thu' : 'Chưa thu'}</td>
@@ -1177,6 +1215,8 @@ export default function Tuition() {
             <td>${st.fullName}</td>
             <td style="text-align: center; mso-number-format:'\@';">${phoneStr}</td>
             <td style="text-align: center;">${st.sessionsAttended}</td>
+            <td style="text-align: center; color: #059669;">${st.sessionsPreviouslyPaid > 0 ? st.sessionsPreviouslyPaid : '-'}</td>
+            <td style="text-align: center; color: #92400e; font-weight: bold;">${st.sessionsToPay}</td>
             <td style="text-align: center;">${st.discount ? st.discount + '%' : ''}</td>
             <td style="text-align: right; font-weight: bold;">${fmtCurrency(st.tuition)}</td>
             <td>${st.note || ''}</td>
@@ -1185,13 +1225,45 @@ export default function Tuition() {
       }
     });
 
+    const sumAttended = processedStudents.reduce((sum, s: any) => sum + (s.sessionsAttended || 0), 0);
+    const sumPreviouslyPaid = processedStudents.reduce((sum, s: any) => sum + (s.sessionsPreviouslyPaid || 0), 0);
+    const sumToPay = processedStudents.reduce((sum, s: any) => sum + (s.sessionsToPay || 0), 0);
+    const sumTuition = processedStudents.reduce((sum, s: any) => sum + (s.tuition || 0), 0);
+
+    if (tabMode === 'TREASURER') {
+      tableRows += `
+        <tr style="background-color: #f2f2f2; font-weight: bold;">
+          <td colspan="3" style="text-align: right; padding-right: 15px;">TỔNG CỘNG</td>
+          <td style="text-align: center; color: #0369a1;">${sumAttended}</td>
+          <td style="text-align: center; color: #059669;">${sumPreviouslyPaid > 0 ? sumPreviouslyPaid : '-'}</td>
+          <td style="text-align: center; color: #92400e;">${sumToPay}</td>
+          <td></td>
+          <td style="text-align: right;">${fmtCurrency(sumTuition)}</td>
+          <td></td>
+          <td></td>
+        </tr>
+      `;
+    } else {
+      tableRows += `
+        <tr style="background-color: #f2f2f2; font-weight: bold;">
+          <td colspan="3" style="text-align: right; padding-right: 15px;">TỔNG CỘNG</td>
+          <td style="text-align: center; color: #0369a1;">${sumAttended}</td>
+          <td style="text-align: center; color: #059669;">${sumPreviouslyPaid > 0 ? sumPreviouslyPaid : '-'}</td>
+          <td style="text-align: center; color: #92400e;">${sumToPay}</td>
+          <td></td>
+          <td style="text-align: right;">${fmtCurrency(sumTuition)}</td>
+          <td></td>
+        </tr>
+      `;
+    }
+
     const headerText = tabMode === 'TREASURER' 
       ? `BÁO CÁO TỔNG HỢP HỌC PHÍ - LỚP ${currentClassName.toUpperCase()} - ${batchName.toUpperCase()}`
       : `BÁO CÁO TỔNG HỢP HỌC PHÍ - LỚP ${currentClassName.toUpperCase()}`;
 
     const tableHeaderHtml = tabMode === 'TREASURER' 
-      ? `<tr><th style="width: 40px;">STT</th><th>Họ và tên</th><th style="width: 100px;">Số ĐT</th><th style="width: 70px;">Số buổi</th><th style="width: 70px;">Miễn (%)</th><th style="width: 100px;">Số tiền</th><th style="width: 90px;">Trạng thái</th><th style="width: 130px;">Ghi chú</th></tr>`
-      : `<tr><th style="width: 40px;">STT</th><th>Họ và tên</th><th style="width: 120px;">Số ĐT</th><th style="width: 80px;">Số buổi</th><th style="width: 80px;">Miễn (%)</th><th style="width: 120px;">Số tiền</th><th style="width: 160px;">Ghi chú</th></tr>`;
+      ? `<tr><th style="width: 40px;">STT</th><th>Họ và tên</th><th style="width: 100px;">Số ĐT</th><th style="width: 70px;">Tổng tham gia</th><th style="width: 70px;">Đã thu</th><th style="width: 70px;">Cần thu</th><th style="width: 70px;">Miễn (%)</th><th style="width: 100px;">Học phí đợt này</th><th style="width: 90px;">Trạng thái</th><th style="width: 130px;">Ghi chú</th></tr>`
+      : `<tr><th style="width: 40px;">STT</th><th>Họ và tên</th><th style="width: 120px;">Số ĐT</th><th style="width: 80px;">Tổng tham gia</th><th style="width: 80px;">Đã thu</th><th style="width: 80px;">Cần thu</th><th style="width: 80px;">Miễn (%)</th><th style="width: 120px;">Học phí đợt này</th><th style="width: 160px;">Ghi chú</th></tr>`;
 
     const htmlContent = `
       <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
@@ -1241,6 +1313,8 @@ export default function Tuition() {
   const total = tuition?.students.reduce((sum, s) => sum + s.tuition, 0) || 0;
   const paidTotal = tuition?.students.filter((s) => s.paymentStatus === 'PAID').reduce((sum, s) => sum + s.tuition, 0) || 0;
   const sumSessions = processedStudents.reduce((sum, s: any) => sum + (s.sessionsAttended || 0), 0);
+  const sumPreviouslyPaid = processedStudents.reduce((sum, s: any) => sum + (s.sessionsPreviouslyPaid || 0), 0);
+  const sumToPay = processedStudents.reduce((sum, s: any) => sum + (s.sessionsToPay || 0), 0);
   const sumTuition = processedStudents.reduce((sum, s: any) => sum + (s.tuition || 0), 0);
 
   const normalizedSearch = classSearchTerm.replace(/\s+/g, '').toLowerCase();
@@ -1474,9 +1548,11 @@ export default function Tuition() {
                     <tr>
                       <th style={{ width: 40, textAlign: 'center' }}>#</th>
                       <th>Học sinh (A-Z)</th>
-                      <th style={{ textAlign: 'center' }}>Đã học</th>
+                      <th style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>Tổng tham gia</th>
+                      <th style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>Đã thu</th>
+                      <th style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>Cần thu</th>
                       <th style={{ textAlign: 'center', width: 90 }}>Miễn (%)</th>
-                      <th style={{ textAlign: 'right' }}>Học phí</th>
+                      <th style={{ textAlign: 'right' }}>Học phí đợt này</th>
                       <th>Ghi chú</th>
                       {tabMode === 'TREASURER' && (
                         <>
@@ -1496,6 +1572,8 @@ export default function Tuition() {
                           <td style={{ textAlign: 'center' }}>{index + 1}</td>
                           <td><strong>{s.fullName}</strong></td>
                           <td style={{ textAlign: 'center' }}><span className="badge badge-info">{s.sessionsAttended} buổi</span></td>
+                          <td style={{ textAlign: 'center', color: '#059669', fontWeight: 600 }}>{s.sessionsPreviouslyPaid > 0 ? `${s.sessionsPreviouslyPaid} buổi` : '-'}</td>
+                          <td style={{ textAlign: 'center' }}><span className="badge" style={{ background: '#fef3c7', color: '#92400e' }}>{s.sessionsToPay} buổi</span></td>
                           
                           <td style={{ textAlign: 'center' }}>
                             {tabMode === 'TREASURER' ? (
@@ -1554,7 +1632,7 @@ export default function Tuition() {
                       );
                     })}
                     {processedStudents.length === 0 && (
-                      <tr><td colSpan={tabMode === 'TREASURER' ? 9 : 6} style={{ textAlign: 'center', padding: '2rem', color: '#6b7280' }}>Không có học sinh nào hoặc không khớp kết quả tìm kiếm.</td></tr>
+                      <tr><td colSpan={tabMode === 'TREASURER' ? 11 : 8} style={{ textAlign: 'center', padding: '2rem', color: '#6b7280' }}>Không có học sinh nào hoặc không khớp kết quả tìm kiếm.</td></tr>
                     )}
                   </tbody>
                   
@@ -1563,6 +1641,8 @@ export default function Tuition() {
                       <tr style={{ background: '#f8fafc' }}>
                         <td colSpan={2} style={{ textAlign: 'center', fontWeight: 800 }}>TỔNG CỘNG</td>
                         <td style={{ textAlign: 'center', fontWeight: 800, color: '#0369a1' }}>{sumSessions} buổi</td>
+                        <td style={{ textAlign: 'center', fontWeight: 800, color: '#059669' }}>{sumPreviouslyPaid > 0 ? `${sumPreviouslyPaid} buổi` : '-'}</td>
+                        <td style={{ textAlign: 'center', fontWeight: 800, color: '#92400e' }}>{sumToPay} buổi</td>
                         <td></td>
                         <td style={{ textAlign: 'right', fontWeight: 800, color: 'var(--primary)', fontSize: '1.1rem' }}>{fmtCurrency(sumTuition)}</td>
                         <td></td>
