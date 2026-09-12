@@ -385,6 +385,7 @@ export async function createAssignment(params: {
   shuffleQuestions: boolean;
   shuffleOptions: boolean;
   antiCheat: boolean;
+  showAnswers: boolean;
   assignedBy: AppUser;
   selectedStudentIds?: string[];
 }): Promise<string> {
@@ -411,6 +412,7 @@ export async function createAssignment(params: {
     shuffleQuestions: params.shuffleQuestions,
     shuffleOptions: params.shuffleOptions,
     antiCheat: params.antiCheat,
+    showAnswers: params.showAnswers,
     assignedBy: params.assignedBy.id,
     assignedByName: params.assignedBy.name,
     assignedAt: serverTimestamp(),

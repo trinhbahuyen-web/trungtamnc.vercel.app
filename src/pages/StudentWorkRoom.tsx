@@ -520,6 +520,7 @@ export default function StudentWorkRoom() {
                   shuffleOptions={assignment.shuffleOptions}
                   seed={seedFrom(`${seedBase}_${section.type}_${q.number}`)}
                   reviewMode={readonly}
+                  showAnswers={assignment.showAnswers ?? true}
                   result={questionResults[String(q.number)]}
                   grade={gradeByQuestion.get(q.number)}
                 />
@@ -656,7 +657,7 @@ function ResultSummary({ submission, exam, grades, results }: {
   );
 }
 
-function QuestionBlock({ question, value, onChange, disabled, index, shuffleOptions, seed, reviewMode, result, grade }: {
+function QuestionBlock({ question, value, onChange, disabled, index, shuffleOptions, seed, reviewMode, showAnswers = true, result, grade }: {
   key?: any;
   question: Question;
   value: string;
@@ -666,6 +667,7 @@ function QuestionBlock({ question, value, onChange, disabled, index, shuffleOpti
   shuffleOptions: boolean;
   seed: number;
   reviewMode?: boolean;
+  showAnswers?: boolean;
   result?: QuestionResult;
   grade?: SubmissionGrade;
 }) {
@@ -729,7 +731,7 @@ function QuestionBlock({ question, value, onChange, disabled, index, shuffleOpti
           )}
         </div>
         <span className="exam-point-badge">
-          {reviewMode && result
+          {reviewMode && result && showAnswers
             ? `${formatScore(type === 'writing' && essayGraded ? grade!.score : result.points)}/${formatScore(result.maxPoints)}đ`
             : `${formatScore(Number(question.points) || 1)}đ`}
         </span>
@@ -742,7 +744,7 @@ function QuestionBlock({ question, value, onChange, disabled, index, shuffleOpti
             value={value}
             disabled={disabled}
             onChange={onChange}
-            reviewMode={reviewMode}
+            reviewMode={reviewMode && showAnswers}
             correctAnswer={question.correctAnswer || ''}
           />
         )}
@@ -753,7 +755,7 @@ function QuestionBlock({ question, value, onChange, disabled, index, shuffleOpti
             value={value}
             disabled={disabled}
             onChange={onChange}
-            reviewMode={reviewMode}
+            reviewMode={reviewMode && showAnswers}
             correctAnswer={question.correctAnswer || ''}
           />
         )}
@@ -764,6 +766,7 @@ function QuestionBlock({ question, value, onChange, disabled, index, shuffleOpti
             disabled={disabled}
             onChange={onChange}
             reviewMode={reviewMode}
+            showAnswers={showAnswers}
             result={result}
             correctAnswer={question.correctAnswer || ''}
           />
@@ -1036,11 +1039,12 @@ function TrueFalseGrid({ options, value, disabled, onChange, reviewMode, correct
   );
 }
 
-function ShortMathInput({ value, disabled, onChange, reviewMode, result, correctAnswer }: {
+function ShortMathInput({ value, disabled, onChange, reviewMode, showAnswers = true, result, correctAnswer }: {
   value: string;
   disabled: boolean;
   onChange: (v: string) => void;
   reviewMode?: boolean;
+  showAnswers?: boolean;
   result?: QuestionResult;
   correctAnswer?: string;
 }) {
@@ -1120,13 +1124,13 @@ function ShortMathInput({ value, disabled, onChange, reviewMode, result, correct
     const isCorrect = result?.status === 'correct';
     const unanswered = !value || !value.trim();
     return (
-      <div className={`exam-sa-box review ${isCorrect ? 'right' : 'wrong'}`}>
+      <div className={`exam-sa-box review ${showAnswers ? (isCorrect ? 'right' : 'wrong') : ''}`}>
         <label className="exam-sa-label">Đáp án của bạn</label>
-        <div className={`review-sa-answer ${isCorrect ? 'right' : 'wrong'}`}>
+        <div className={`review-sa-answer ${showAnswers ? (isCorrect ? 'right' : 'wrong') : ''}`}>
           {unanswered ? <em>— Chưa trả lời —</em> : <MathText html={mathify(value)} />}
-          <span className="review-sa-mark">{isCorrect ? '✓' : '✕'}</span>
+          {showAnswers && <span className="review-sa-mark">{isCorrect ? '✓' : '✕'}</span>}
         </div>
-        {!isCorrect && correctAnswer && (
+        {showAnswers && !isCorrect && correctAnswer && (
           <div className="review-sa-correct">
             <span>Đáp án đúng:</span> <MathText html={mathify(correctAnswer)} />
           </div>

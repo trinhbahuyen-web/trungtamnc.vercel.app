@@ -354,6 +354,7 @@ export interface Assignment {
   shuffleQuestions: boolean;
   shuffleOptions: boolean;
   antiCheat: boolean;
+  showAnswers: boolean;
   assignedBy: string;
   assignedByName?: string;
   assignedAt?: Date;

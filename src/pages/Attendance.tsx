@@ -44,6 +44,65 @@ export default function Attendance() {
   const [classSearchTerm, setClassSearchTerm] = useState('');
   const [isClassDropdownOpen, setIsClassDropdownOpen] = useState(false);
 
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyDates, setHistoryDates] = useState<string[]>([]);
+  const [historyRecords, setHistoryRecords] = useState<any[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  const [recentSessions, setRecentSessions] = useState<{sessionNumber: number, date: string}[]>([]);
+  const [refreshRecentTrigger, setRefreshRecentTrigger] = useState(0);
+
+  useEffect(() => {
+    if (!selectedClass) {
+      setRecentSessions([]);
+      return;
+    }
+    let isMounted = true;
+    const fetchRecent = async () => {
+      try {
+        const snap = await getDocs(
+          query(collection(db, 'attendance'), where('classId', '==', selectedClass))
+        );
+        const dateSet = new Set<string>();
+        snap.forEach(d => dateSet.add(d.data().date));
+        const allSortedDates = Array.from(dateSet).sort();
+        const recent = allSortedDates.slice(-8).map((d) => ({
+          sessionNumber: allSortedDates.indexOf(d) + 1,
+          date: d
+        }));
+        if (isMounted) setRecentSessions(recent);
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    fetchRecent();
+    return () => { isMounted = false; };
+  }, [selectedClass, refreshRecentTrigger]);
+
+  const loadHistory = async () => {
+    if (!selectedClass) return;
+    setLoadingHistory(true);
+    setShowHistory(true);
+    try {
+      const attSnap = await getDocs(
+        query(collection(db, 'attendance'), where('classId', '==', selectedClass))
+      );
+      const allAtt = attSnap.docs.map(d => d.data());
+      
+      const datesSet = new Set<string>();
+      allAtt.forEach(a => datesSet.add(a.date));
+      const sortedDates = Array.from(datesSet).sort().reverse().slice(0, 20);
+      
+      setHistoryDates(sortedDates);
+      setHistoryRecords(allAtt);
+    } catch (error) {
+      console.error(error);
+      toast('Lỗi tải lịch sử', 'error');
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
   useEffect(() => {
     if (!user) return;
     getClasses(user)
@@ -119,6 +178,7 @@ export default function Attendance() {
         `Đã lưu điểm danh ${arr.filter((r) => r.present).length}/${roster.length} học sinh`, 'success'
       );
       setHasSavedData(true); // Cập nhật trạng thái hiển thị nút Xóa
+      setRefreshRecentTrigger(t => t + 1);
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Lỗi', 'error');
     } finally {
@@ -153,6 +213,7 @@ export default function Attendance() {
 
       toast('Đã xóa dữ liệu điểm danh thành công! Lớp đã được trả về trạng thái trống.', 'success');
       setHasSavedData(false);
+      setRefreshRecentTrigger(t => t + 1);
       loadRosterAndAttendance(); // Tải lại giao diện về mặc định
     } catch (e) {
       toast('Lỗi khi xóa điểm danh', 'error');
@@ -356,14 +417,52 @@ export default function Attendance() {
 
   return (
     <div className="fade-up">
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h1 className="page-title">
             <CheckSquare size={26} /> <span>Điểm danh</span>
           </h1>
           <p className="page-sub">Gõ tìm lớp, điểm danh hàng ngày và xuất báo cáo Tổng hợp</p>
         </div>
+        <div>
+          {selectedClass && (
+            <button className="btn btn-secondary" onClick={loadHistory} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <ClipboardList size={16} /> Lịch sử 20 buổi
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Bảng nhỏ gọn một số buổi */}
+      {selectedClass && recentSessions.length > 0 && (
+        <div className="card" style={{ marginBottom: 16, border: '1px solid #10b981', boxShadow: '0 4px 6px -1px rgba(16, 185, 129, 0.1)' }}>
+          <div className="card-body" style={{ padding: '12px' }}>
+            <h4 style={{ margin: '0 0 10px 0', fontSize: '13px', color: '#059669', display: 'flex', alignItems: 'center', gap: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              <ClipboardList size={14} /> Tóm tắt các buổi gần nhất
+            </h4>
+            <div style={{ overflowX: 'auto', paddingBottom: '4px' }}>
+              <table style={{ minWidth: '100%', borderCollapse: 'collapse', textAlign: 'center', fontSize: '13px' }}>
+                <tbody>
+                  <tr>
+                    {recentSessions.map((s, i) => (
+                      <td key={`b-${i}`} style={{ border: '1px solid #e2e8f0', padding: '6px 12px', fontWeight: 600, background: '#ecfdf5', color: '#065f46', whiteSpace: 'nowrap' }}>
+                        Buổi {s.sessionNumber}
+                      </td>
+                    ))}
+                  </tr>
+                  <tr>
+                    {recentSessions.map((s, i) => (
+                      <td key={`d-${i}`} style={{ border: '1px solid #e2e8f0', padding: '6px 12px', whiteSpace: 'nowrap', color: '#475569' }}>
+                        {fmtDate(s.date).slice(0, 5)}
+                      </td>
+                    ))}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="card" style={{ marginBottom: 16, position: 'relative', zIndex: 50, overflow: 'visible' }}>
         <div className="card-body" style={{ overflow: 'visible' }}>
@@ -588,6 +687,61 @@ export default function Attendance() {
             <CheckSquare size={40} />
           </div>
           <h3>Gõ chọn lớp để bắt đầu điểm danh</h3>
+        </div>
+      )}
+
+      {showHistory && (
+        <div className="modal-backdrop" onClick={() => setShowHistory(false)}>
+          <div className="modal-content" style={{ maxWidth: '1000px', width: '95%' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <ClipboardList size={20} /> Lịch sử điểm danh (20 buổi gần nhất)
+              </h2>
+              <button className="icon-btn" onClick={() => setShowHistory(false)}>
+                <X size={20} />
+              </button>
+            </div>
+            <div className="modal-body" style={{ overflowX: 'auto', maxHeight: '70vh' }}>
+              {loadingHistory ? (
+                <div style={{ textAlign: 'center', padding: '40px 20px', color: '#6b7280' }}>Đang tải dữ liệu...</div>
+              ) : historyDates.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '40px 20px', color: '#6b7280' }}>Chưa có dữ liệu điểm danh nào của lớp này.</div>
+              ) : (
+                <table className="table" style={{ whiteSpace: 'nowrap' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ position: 'sticky', left: 0, background: '#f9fafb', zIndex: 10 }}>STT</th>
+                      <th style={{ position: 'sticky', left: 40, background: '#f9fafb', zIndex: 10 }}>Học sinh</th>
+                      {historyDates.map(d => {
+                        const [, m, day] = d.split('-');
+                        return <th key={d} style={{ textAlign: 'center', minWidth: '70px' }}>{day}/{m}</th>;
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {roster.map((student, idx) => (
+                      <tr key={student.id}>
+                        <td style={{ position: 'sticky', left: 0, background: '#fff', zIndex: 5 }}>{idx + 1}</td>
+                        <td style={{ position: 'sticky', left: 40, background: '#fff', zIndex: 5, fontWeight: 500 }}>{student.fullName}</td>
+                        {historyDates.map(d => {
+                          const record = historyRecords.find(r => r.studentId === student.id && r.date === d);
+                          if (!record) return <td key={d} style={{ textAlign: 'center', color: '#9ca3af' }}>-</td>;
+                          if (!record.present) return <td key={d} style={{ textAlign: 'center', color: '#dc2626', fontWeight: 'bold' }} title="Vắng mặt">V</td>;
+                          
+                          // Có mặt
+                          if (record.tuitionPaid) {
+                            return <td key={d} style={{ textAlign: 'center', color: '#059669', fontWeight: 'bold' }} title="Đã đóng học phí">✓ (Đã thu)</td>;
+                          } else {
+                            return <td key={d} style={{ textAlign: 'center', color: '#d97706', fontWeight: 'bold' }} title="Chưa đóng học phí">✓ (Chưa thu)</td>;
+                          }
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
