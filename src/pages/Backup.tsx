@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, type ChangeEvent } from 'react';
 import { Database, ShieldCheck, HardDriveDownload, UploadCloud, Upload, FileText, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
 import { useToast } from '../context/ToastContext';
 import { db } from '../config/firebase';
@@ -80,7 +80,7 @@ export default function Backup() {
     }
   };
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 

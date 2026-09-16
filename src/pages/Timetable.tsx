@@ -80,6 +80,26 @@ export default function Timetable() {
   // Giao diện quản lý theo Tuần
   const [selectedWeek, setSelectedWeek] = useState(getCurrentWeek());
 
+  // State phục vụ Sao chép từ tuần trước
+  interface AvailableWeekOption {
+    week: string;
+    weekLabel: string;
+    totalSlots: number;
+    data: ScheduleData;
+  }
+  const [searchingPrevWeek, setSearchingPrevWeek] = useState(false);
+  const [copyModal, setCopyModal] = useState<{
+    open: boolean;
+    sourceWeek: string;
+    sourceOptions: AvailableWeekOption[];
+    currentSlotsCount: number;
+  }>({
+    open: false,
+    sourceWeek: '',
+    sourceOptions: [],
+    currentSlotsCount: 0,
+  });
+
   // Modal State
   const [activeSlot, setActiveSlot] = useState<{ day: number; shift: number } | null>(null);
   const [selectedClassId, setSelectedClassId] = useState('');
@@ -122,6 +142,11 @@ export default function Timetable() {
     }
   }
 
+  const countSlots = (d?: ScheduleData | null) => {
+    if (!d) return 0;
+    return Object.values(d).reduce((acc: number, arr) => acc + (Array.isArray(arr) ? arr.length : 0), 0);
+  };
+
   const saveToFirebase = async (newData: ScheduleData, week: string = selectedWeek) => {
     setSaving(true);
     try {
@@ -135,49 +160,149 @@ export default function Timetable() {
   };
 
   const handleCopyPrevWeek = async () => {
-    // Chỉ hỏi xác nhận nếu tuần hiện tại đã có dữ liệu để tránh ghi đè nhầm
-    const currentIsNotEmpty = Object.values(schedule).some(slots => slots && slots.length > 0);
-    if (currentIsNotEmpty) {
-      if (!window.confirm('Lịch tuần này đã có dữ liệu. Việc sao chép sẽ GHI ĐÈ lên toàn bộ. Bạn có chắc chắn?')) return;
-    }
-    
-    setSaving(true);
+    setSearchingPrevWeek(true);
     try {
-      let foundData: ScheduleData | null = null;
       let currSearchWeek = getPrevWeek(selectedWeek);
       let searchCount = 0;
-      let foundWeek = '';
-      
-      // Tìm ngược lại tối đa 10 tuần gần nhất xem tuần nào có dữ liệu
-      while (searchCount < 10) {
-        const snap = await getDoc(doc(db, 'timetables', currSearchWeek));
-        if (snap.exists() && Object.keys(snap.data().data || {}).length > 0) {
-          foundData = snap.data().data;
-          foundWeek = currSearchWeek;
-          break;
+      const options: AvailableWeekOption[] = [];
+
+      // Quét ngược lại tối đa 12 tuần gần nhất xem tuần nào có dữ liệu
+      while (searchCount < 12) {
+        try {
+          const snap = await getDoc(doc(db, 'timetables', currSearchWeek));
+          if (snap.exists()) {
+            const rawData = snap.data().data || {};
+            const total = countSlots(rawData);
+            if (total > 0) {
+              const parts = currSearchWeek.split('-W');
+              const wNum = parts.length > 1 ? parseInt(parts[1], 10) : currSearchWeek;
+              const yNum = parts[0];
+              options.push({
+                week: currSearchWeek,
+                weekLabel: `Tuần ${wNum} (${yNum}) — ${total} tiết học`,
+                totalSlots: total,
+                data: rawData,
+              });
+              if (options.length >= 6) break;
+            }
+          }
+        } catch (err) {
+          console.error(`Lỗi đọc dữ liệu tuần ${currSearchWeek}:`, err);
         }
         currSearchWeek = getPrevWeek(currSearchWeek);
         searchCount++;
       }
 
-      if (foundData) {
-        setSchedule(foundData);
-        await saveToFirebase(foundData, selectedWeek);
-        toast(`Đã sao chép lịch từ Tuần ${foundWeek.split('-W')[1]} thành công!`, 'success');
-      } else {
-        // Hỗ trợ chuyển đổi từ hệ thống cũ (chưa có tuần) sang hệ thống tuần
-        const legacySnap = await getDoc(doc(db, 'settings', 'timetable'));
-        if (legacySnap.exists() && Object.keys(legacySnap.data().data || {}).length > 0) {
-            const legacyData = legacySnap.data().data;
-            setSchedule(legacyData);
-            await saveToFirebase(legacyData, selectedWeek);
-            toast('Đã khởi tạo lịch từ dữ liệu gốc thành công!', 'success');
-        } else {
-            toast('Không tìm thấy dữ liệu lịch học trong 10 tuần gần nhất để sao chép!', 'warning');
+      // Hỗ trợ kiểm tra cả lịch gốc legacy nếu chưa thấy tuần nào
+      if (options.length === 0) {
+        try {
+          const legacySnap = await getDoc(doc(db, 'settings', 'timetable'));
+          if (legacySnap.exists()) {
+            const legacyData = legacySnap.data().data || {};
+            const total = countSlots(legacyData);
+            if (total > 0) {
+              options.push({
+                week: 'legacy',
+                weekLabel: `Lịch gốc ban đầu — ${total} tiết học`,
+                totalSlots: total,
+                data: legacyData,
+              });
+            }
+          }
+        } catch (err) {
+          console.error('Lỗi đọc lịch legacy:', err);
         }
       }
+
+      if (options.length === 0) {
+        toast('Không tìm thấy dữ liệu thời khóa biểu nào ở các tuần trước để sao chép!', 'warning');
+        return;
+      }
+
+      const currentTotal = countSlots(schedule);
+
+      // Mở modal để người dùng xác nhận và lựa chọn Ghi đè hoặc Gộp thêm
+      setCopyModal({
+        open: true,
+        sourceWeek: options[0].week,
+        sourceOptions: options,
+        currentSlotsCount: currentTotal,
+      });
     } catch (e) {
-      toast('Lỗi khi sao chép lịch', 'error');
+      console.error('Lỗi quét lịch tuần trước:', e);
+      toast('Lỗi khi tìm kiếm dữ liệu tuần trước', 'error');
+    } finally {
+      setSearchingPrevWeek(false);
+    }
+  };
+
+  const performCopy = async (targetSourceWeek: string, mode: 'overwrite' | 'merge') => {
+    const selectedOption = copyModal.sourceOptions.find((opt) => opt.week === targetSourceWeek) || copyModal.sourceOptions[0];
+    if (!selectedOption) return;
+
+    setSaving(true);
+    try {
+      let finalSchedule: ScheduleData = {};
+
+      if (mode === 'overwrite') {
+        // Ghi đè toàn bộ: sinh mới id cho từng tiết để độc lập với tuần cũ
+        for (const [key, items] of Object.entries(selectedOption.data)) {
+          if (Array.isArray(items)) {
+            finalSchedule[key] = items.map((i) => ({
+              id: generateId(),
+              classId: i.classId,
+              className: i.className,
+              room: i.room || '',
+            }));
+          }
+        }
+      } else {
+        // Gộp thêm vào: giữ nguyên các tiết hiện có ở tuần này, bổ sung thêm tiết từ tuần nguồn nếu chưa có lớp đó trong cùng ca
+        finalSchedule = {};
+        for (const [key, items] of Object.entries(schedule)) {
+          if (Array.isArray(items)) {
+            finalSchedule[key] = [...items];
+          }
+        }
+        for (const [key, items] of Object.entries(selectedOption.data)) {
+          if (!Array.isArray(items)) continue;
+          const currentInSlot = finalSchedule[key] || [];
+          const existingClassIds = new Set(currentInSlot.map((x) => x.classId));
+
+          const toAdd = items
+            .filter((x) => !existingClassIds.has(x.classId))
+            .map((x) => ({
+              id: generateId(),
+              classId: x.classId,
+              className: x.className,
+              room: x.room || '',
+            }));
+
+          finalSchedule[key] = [...currentInSlot, ...toAdd];
+        }
+      }
+
+      await setDoc(doc(db, 'timetables', selectedWeek), { data: finalSchedule });
+      setSchedule(finalSchedule);
+
+      const totalResult = countSlots(finalSchedule);
+      const srcName = selectedOption.week.includes('-W')
+        ? `Tuần ${parseInt(selectedOption.week.split('-W')[1], 10)}`
+        : 'Lịch gốc';
+      const destName = selectedWeek.includes('-W')
+        ? `Tuần ${parseInt(selectedWeek.split('-W')[1], 10)}`
+        : selectedWeek;
+
+      toast(
+        mode === 'overwrite'
+          ? `Đã sao chép 100% lịch từ ${srcName} sang ${destName} (${totalResult} tiết)!`
+          : `Đã gộp thêm lịch từ ${srcName} sang ${destName} thành công (Tổng ${totalResult} tiết)!`,
+        'success'
+      );
+      setCopyModal((prev) => ({ ...prev, open: false }));
+    } catch (err) {
+      console.error('Lỗi sao chép thời khóa biểu:', err);
+      toast('Lỗi khi sao chép thời khóa biểu', 'error');
     } finally {
       setSaving(false);
     }
@@ -368,8 +493,13 @@ export default function Timetable() {
           </div>
           
           {isAdmin && (
-            <button className="btn btn-primary" onClick={handleCopyPrevWeek} disabled={saving} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Copy size={16} /> Sao chép từ tuần trước
+            <button
+              className="btn btn-primary"
+              onClick={handleCopyPrevWeek}
+              disabled={saving || searchingPrevWeek}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+            >
+              <Copy size={16} /> {searchingPrevWeek ? 'Đang kiểm tra...' : 'Sao chép từ tuần trước'}
             </button>
           )}
           
@@ -557,6 +687,152 @@ export default function Timetable() {
               ))}
             </div>
           )}
+        </div>
+      </Modal>
+
+      {/* MODAL SAO CHÉP THỜI KHÓA BIỂU TỪ TUẦN TRƯỚC */}
+      <Modal
+        open={copyModal.open}
+        onClose={() => !saving && setCopyModal((prev) => ({ ...prev, open: false }))}
+        title={`Sao chép thời khóa biểu sang Tuần ${selectedWeek.includes('-W') ? parseInt(selectedWeek.split('-W')[1], 10) : selectedWeek}`}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {/* Chọn tuần nguồn */}
+          <div className="form-group">
+            <label className="form-label" style={{ fontWeight: 600, color: '#374151' }}>
+              Chọn tuần nguồn để sao chép:
+            </label>
+            <select
+              className="form-select"
+              value={copyModal.sourceWeek}
+              onChange={(e) => setCopyModal((prev) => ({ ...prev, sourceWeek: e.target.value }))}
+              style={{ fontWeight: 500, fontSize: '0.95rem' }}
+            >
+              {copyModal.sourceOptions.map((opt) => (
+                <option key={opt.week} value={opt.week}>
+                  {opt.weekLabel}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Cảnh báo & hướng dẫn số lượng tiết */}
+          {copyModal.currentSlotsCount > 0 ? (
+            <div
+              style={{
+                background: '#fffbeb',
+                border: '1px solid #fef3c7',
+                borderRadius: '8px',
+                padding: '12px 14px',
+                fontSize: '0.9rem',
+                color: '#92400e',
+              }}
+            >
+              <div style={{ fontWeight: 600, marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span>⚠️ Tuần hiện tại đã có {copyModal.currentSlotsCount} tiết học được xếp!</span>
+              </div>
+              <p style={{ margin: 0, fontSize: '0.85rem', lineHeight: 1.5 }}>
+                Thầy/Cô vui lòng chọn cách thực hiện bên dưới:
+                <br />
+                • <strong>Gộp thêm vào</strong>: Giữ nguyên {copyModal.currentSlotsCount} tiết đang có, bổ sung thêm các tiết từ tuần nguồn (tự động bỏ qua tiết trùng lớp trong cùng ca).
+                <br />
+                • <strong>Ghi đè toàn bộ</strong>: Xóa các tiết hiện có ở tuần này và sao chép 100% lịch học của tuần nguồn.
+              </p>
+            </div>
+          ) : (
+            <div
+              style={{
+                background: '#f0fdf4',
+                border: '1px solid #dcfce7',
+                borderRadius: '8px',
+                padding: '12px 14px',
+                fontSize: '0.9rem',
+                color: '#166534',
+              }}
+            >
+              Tuần hiện tại đang trống. Thầy/Cô có thể sao chép toàn bộ lịch học từ tuần nguồn sang tuần này nhanh chóng.
+            </div>
+          )}
+
+          {/* Các nút hành động */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '6px' }}>
+            {copyModal.currentSlotsCount > 0 ? (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => performCopy(copyModal.sourceWeek, 'merge')}
+                  disabled={saving}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    padding: '11px 16px',
+                    fontWeight: 600,
+                    fontSize: '0.95rem',
+                  }}
+                >
+                  <Copy size={18} /> {saving ? 'Đang sao chép...' : 'Gộp thêm vào lịch hiện tại (Khuyên dùng)'}
+                </button>
+                <div style={{ fontSize: '0.8rem', color: '#6b7280', textAlign: 'center', marginTop: '-4px' }}>
+                  Giữ nguyên {copyModal.currentSlotsCount} tiết đang có, thêm các tiết khác từ tuần nguồn
+                </div>
+
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => performCopy(copyModal.sourceWeek, 'overwrite')}
+                  disabled={saving}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    padding: '11px 16px',
+                    color: '#dc2626',
+                    borderColor: '#fca5a5',
+                    background: '#fef2f2',
+                    fontWeight: 600,
+                    fontSize: '0.95rem',
+                  }}
+                >
+                  <Trash2 size={18} /> {saving ? 'Đang ghi đè...' : 'Ghi đè toàn bộ (Lấy 100% tuần nguồn)'}
+                </button>
+                <div style={{ fontSize: '0.8rem', color: '#9ca3af', textAlign: 'center', marginTop: '-4px' }}>
+                  Xóa các tiết hiện có ở tuần này và thay thế hoàn toàn
+                </div>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => performCopy(copyModal.sourceWeek, 'overwrite')}
+                disabled={saving}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                  padding: '11px 16px',
+                  fontWeight: 600,
+                  fontSize: '0.95rem',
+                }}
+              >
+                <Copy size={18} /> {saving ? 'Đang sao chép...' : 'Xác nhận sao chép sang tuần này'}
+              </button>
+            )}
+
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => !saving && setCopyModal((prev) => ({ ...prev, open: false }))}
+              disabled={saving}
+              style={{ padding: '8px 16px', color: '#6b7280' }}
+            >
+              Hủy bỏ
+            </button>
+          </div>
         </div>
       </Modal>
     </div>

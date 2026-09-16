@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, type ChangeEvent, type MouseEvent } from 'react';
+import { useState, useEffect, useRef, useMemo, type ChangeEvent, type MouseEvent, type ReactNode } from 'react';
 import * as XLSX from 'xlsx';
 import {
   School,
@@ -43,6 +43,7 @@ import {
 import { getAllUsers } from '../services/authService';
 import { AppUser, ClassItem, Role, Status, Student } from '../types';
 import Modal from '../components/Modal';
+import ConfirmModal from '../components/ConfirmModal';
 
 interface ClassForm {
   className: string;
@@ -255,6 +256,23 @@ export default function Classes() {
     status: 'ACTIVE',
   });
   const [savingStudent, setSavingStudent] = useState(false);
+
+  // STATE: Hộp thoại xác nhận thao tác (thay thế window.confirm chống bị chặn trên trình duyệt/mobile)
+  const [confirmModal, setConfirmModal] = useState<{
+    open: boolean;
+    title: string;
+    message: ReactNode;
+    confirmText?: string;
+    onConfirm: () => Promise<void> | void;
+    loading?: boolean;
+  }>({
+    open: false,
+    title: '',
+    message: '',
+    confirmText: 'Xác nhận xóa',
+    onConfirm: () => {},
+    loading: false,
+  });
 
   useEffect(() => {
     loadAll();
@@ -479,23 +497,46 @@ export default function Classes() {
     
     setSavingStudent(true);
     try {
-      // 1. Tạo học sinh mới
-      const ref = await addStudent(studentForm);
-      
-      // 2. Thêm vào lớp hiện tại
-      await enrollStudent(ref.id, detail.id);
-      
-      toast('Đã tạo hồ sơ và xếp học sinh vào lớp thành công!', 'success');
+      const cleanStr = (v: unknown) => String(v ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const nameClean = cleanStr(studentForm.fullName);
+      const phoneClean = cleanStr(studentForm.parentPhone);
+
+      // Kiểm tra xem học sinh này đã có trong hệ thống chưa
+      const allStudents = await getStudents();
+      const existing = allStudents.find(
+        (s) => cleanStr(s.fullName) === nameClean && (phoneClean ? cleanStr(s.parentPhone) === phoneClean : false)
+      );
+
+      let targetStudentId = '';
+      if (existing) {
+        // Đã có trong hệ thống -> Kiểm tra xem đã có trong lớp này chưa
+        const isAlreadyInClass = roster.some(r => r.id === existing.id);
+        if (isAlreadyInClass) {
+          toast(`Học sinh "${existing.fullName}" đã có sẵn trong lớp này!`, 'warning');
+          setShowAddStudentModal(false);
+          return;
+        }
+        targetStudentId = existing.id;
+        await enrollStudent(targetStudentId, detail.id);
+        toast(`Học sinh "${existing.fullName}" đã có trong hồ sơ trung tâm, đã tự động xếp vào lớp!`, 'success');
+      } else {
+        // 1. Tạo học sinh mới
+        const ref = await addStudent(studentForm);
+        targetStudentId = ref.id;
+        // 2. Thêm vào lớp hiện tại
+        await enrollStudent(targetStudentId, detail.id);
+        toast('Đã tạo hồ sơ và xếp học sinh vào lớp thành công!', 'success');
+      }
       
       // 3. Cập nhật lại danh sách
-      const [newRoster, allStudents] = await Promise.all([
+      const [newRoster, updatedStudents] = await Promise.all([
         getClassRoster(detail.id),
         getStudents(),
       ]);
       
       setRoster(newRoster.sort((a, b) => getFirstName(a.fullName).localeCompare(getFirstName(b.fullName), 'vi', { sensitivity: 'base' })));
       setClassStudentCountMap(prev => ({ ...prev, [detail.id]: newRoster.length }));
-      setStudents(allStudents); // Cập nhật danh sách tổng để bộ tìm kiếm hoạt động
+      setStudents(updatedStudents); // Cập nhật danh sách tổng để bộ tìm kiếm hoạt động
       
       // 4. Đóng form và reset
       setShowAddStudentModal(false);
@@ -509,51 +550,95 @@ export default function Classes() {
         status: 'ACTIVE',
       });
     } catch (e) {
-      toast('Lỗi tạo học sinh', 'error');
+      console.error('Lỗi tạo/thêm học sinh:', e);
+      toast(e instanceof Error ? e.message : 'Lỗi tạo học sinh', 'error');
     } finally {
       setSavingStudent(false);
     }
   };
 
-  async function doRemoveStudent(studentId: string) {
-    if (!detail || !window.confirm('Xóa học sinh khỏi lớp? Học sinh vẫn còn trong danh sách chung.')) return;
-    try {
-      await removeEnrollment(studentId, detail.id);
-      toast('Đã xóa học sinh khỏi lớp');
-      setRoster((r) => {
-        const nextRoster = r.filter((s) => s.id !== studentId);
-        setClassStudentCountMap(prev => ({ ...prev, [detail.id]: nextRoster.length }));
-        return nextRoster;
-      });
-      setSelectedRosterIds((prev) => {
-        const next = new Set(prev);
-        next.delete(studentId);
-        return next;
-      });
-    } catch (e) {
-      toast('Lỗi', 'error');
-    }
+  function doRemoveStudent(studentId: string) {
+    if (!detail) return;
+    const s = roster.find((item) => item.id === studentId);
+    setConfirmModal({
+      open: true,
+      title: 'Xóa học sinh khỏi lớp',
+      message: (
+        <div>
+          <p style={{ margin: '0 0 6px 0' }}>
+            Bạn có chắc chắn muốn xóa học sinh <strong>{s?.fullName || 'này'}</strong> khỏi lớp <strong>{detail.className}</strong>?
+          </p>
+          <p style={{ margin: 0, color: '#64748b', fontSize: '0.85rem' }}>
+            Lưu ý: Học sinh vẫn được giữ trong danh sách chung của trung tâm (chỉ xóa liên kết khỏi lớp học này).
+          </p>
+        </div>
+      ),
+      confirmText: 'Xóa khỏi lớp',
+      loading: false,
+      onConfirm: async () => {
+        setConfirmModal((prev) => ({ ...prev, loading: true }));
+        try {
+          await removeEnrollment(studentId, detail.id);
+          toast('Đã xóa học sinh khỏi lớp', 'success');
+          setRoster((r) => {
+            const nextRoster = r.filter((s) => s.id !== studentId);
+            setClassStudentCountMap(prev => ({ ...prev, [detail.id]: nextRoster.length }));
+            return nextRoster;
+          });
+          setSelectedRosterIds((prev) => {
+            const next = new Set(prev);
+            next.delete(studentId);
+            return next;
+          });
+          setConfirmModal((prev) => ({ ...prev, open: false, loading: false }));
+        } catch (e) {
+          console.error(e);
+          toast('Lỗi khi xóa học sinh khỏi lớp', 'error');
+          setConfirmModal((prev) => ({ ...prev, loading: false }));
+        }
+      },
+    });
   }
 
-  async function doRemoveSelectedStudentsFromClass() {
+  function doRemoveSelectedStudentsFromClass() {
     if (!detail) return;
     const ids = [...selectedRosterIds];
     if (ids.length === 0) return toast('Chưa chọn học sinh nào', 'warning');
 
-    if (!window.confirm(`Xóa ${ids.length} học sinh đã chọn khỏi lớp "${detail.className}"?`)) return;
-
-    try {
-      await removeEnrollments(ids, detail.id);
-      toast(`Đã xóa ${ids.length} học sinh khỏi lớp`);
-      setRoster((r) => {
-        const nextRoster = r.filter((s) => !selectedRosterIds.has(s.id));
-        setClassStudentCountMap(prev => ({ ...prev, [detail.id]: nextRoster.length }));
-        return nextRoster;
-      });
-      setSelectedRosterIds(new Set());
-    } catch (e) {
-      toast('Lỗi xóa nhiều học sinh', 'error');
-    }
+    setConfirmModal({
+      open: true,
+      title: 'Xóa học sinh đã chọn',
+      message: (
+        <div>
+          <p style={{ margin: '0 0 6px 0' }}>
+            Bạn có chắc chắn muốn xóa <strong>{ids.length} học sinh</strong> đã chọn khỏi lớp <strong>{detail.className}</strong>?
+          </p>
+          <p style={{ margin: 0, color: '#64748b', fontSize: '0.85rem' }}>
+            Lưu ý: Các em học sinh vẫn được lưu trữ an toàn trong danh sách học sinh của trung tâm.
+          </p>
+        </div>
+      ),
+      confirmText: `Xóa ${ids.length} học sinh`,
+      loading: false,
+      onConfirm: async () => {
+        setConfirmModal((prev) => ({ ...prev, loading: true }));
+        try {
+          await removeEnrollments(ids, detail.id);
+          toast(`Đã xóa ${ids.length} học sinh khỏi lớp`, 'success');
+          setRoster((r) => {
+            const nextRoster = r.filter((s) => !selectedRosterIds.has(s.id));
+            setClassStudentCountMap(prev => ({ ...prev, [detail.id]: nextRoster.length }));
+            return nextRoster;
+          });
+          setSelectedRosterIds(new Set());
+          setConfirmModal((prev) => ({ ...prev, open: false, loading: false }));
+        } catch (e) {
+          console.error(e);
+          toast('Lỗi xóa nhiều học sinh', 'error');
+          setConfirmModal((prev) => ({ ...prev, loading: false }));
+        }
+      },
+    });
   }
 
   async function doImportStudentsToClass(e: ChangeEvent<HTMLInputElement>) {
@@ -681,17 +766,37 @@ export default function Classes() {
     }
   }
 
-  async function doRemoveTeacher(teacherId: string) {
-    if (!detail || !window.confirm('Hủy phân công giáo viên?')) return;
-    try {
-      await removeTeacherFromClass(teacherId, detail.id);
-      toast('Đã hủy phân công');
-      const updatedT = assignedTeachers.filter((x) => x.id !== teacherId);
-      setAssignedTeachers(updatedT);
-      setClassTeacherMap(prev => ({ ...prev, [detail.id]: updatedT }));
-    } catch (e) {
-      toast('Lỗi', 'error');
-    }
+  function doRemoveTeacher(teacherId: string) {
+    if (!detail) return;
+    const t = assignedTeachers.find((x) => x.id === teacherId);
+    setConfirmModal({
+      open: true,
+      title: 'Hủy phân công giáo viên',
+      message: (
+        <div>
+          <p style={{ margin: '0 0 6px 0' }}>
+            Bạn có chắc chắn muốn hủy phân công giáo viên/trợ giảng <strong>{t?.name || ''}</strong> khỏi lớp <strong>{detail.className}</strong>?
+          </p>
+        </div>
+      ),
+      confirmText: 'Hủy phân công',
+      loading: false,
+      onConfirm: async () => {
+        setConfirmModal((prev) => ({ ...prev, loading: true }));
+        try {
+          await removeTeacherFromClass(teacherId, detail.id);
+          toast('Đã hủy phân công giáo viên khỏi lớp', 'success');
+          const updatedT = assignedTeachers.filter((x) => x.id !== teacherId);
+          setAssignedTeachers(updatedT);
+          setClassTeacherMap(prev => ({ ...prev, [detail.id]: updatedT }));
+          setConfirmModal((prev) => ({ ...prev, open: false, loading: false }));
+        } catch (e) {
+          console.error(e);
+          toast('Lỗi hủy phân công giáo viên', 'error');
+          setConfirmModal((prev) => ({ ...prev, loading: false }));
+        }
+      },
+    });
   }
 
   const submitEditRequest = async () => {
@@ -1139,6 +1244,17 @@ export default function Classes() {
           <input className="form-control" value={studentForm.note} onChange={(e) => setStudentForm((f) => ({ ...f, note: e.target.value }))} placeholder="Ghi chú thêm..." />
         </div>
       </Modal>
+
+      {/* Modal xác nhận thao tác (Xóa học sinh / Hủy giáo viên) */}
+      <ConfirmModal
+        open={confirmModal.open}
+        onClose={() => !confirmModal.loading && setConfirmModal((prev) => ({ ...prev, open: false }))}
+        onConfirm={confirmModal.onConfirm}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        confirmText={confirmModal.confirmText}
+        loading={confirmModal.loading}
+      />
 
     </div>
   );

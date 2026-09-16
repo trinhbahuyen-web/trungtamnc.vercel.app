@@ -293,12 +293,31 @@ export const deleteStudents = async (ids: string[]) => {
 };
 
 export const removeEnrollments = async (studentIds: string[], classId: string) => {
+  if (!studentIds.length) return;
   for (const chunk of chunkArray(studentIds, 440)) {
     const batch = writeBatch(db);
     chunk.forEach((studentId) => {
       batch.delete(doc(db, 'enrollments', `${classId}__${studentId}`));
     });
     await batch.commit();
+  }
+
+  // Dự phòng: Nếu có bản ghi enrollment được lưu với ID tự sinh (auto ID) trước đây
+  try {
+    const snap = await getDocs(
+      query(collection(db, 'enrollments'), where('classId', '==', classId))
+    );
+    const targetSet = new Set(studentIds);
+    const extraDocs = snap.docs.filter((d) => targetSet.has(d.data().studentId as string));
+    if (extraDocs.length > 0) {
+      for (const chunk of chunkArray(extraDocs, 440)) {
+        const batch = writeBatch(db);
+        chunk.forEach((d) => batch.delete(d.ref));
+        await batch.commit();
+      }
+    }
+  } catch (err) {
+    console.warn('Fallback removeEnrollments cleanup:', err);
   }
 };
 
@@ -346,8 +365,26 @@ export const enrollStudent = async (studentId: string, classId: string) => {
   });
 };
 
-export const removeEnrollment = (studentId: string, classId: string) =>
-  deleteDoc(doc(db, 'enrollments', `${classId}__${studentId}`));
+export const removeEnrollment = async (studentId: string, classId: string) => {
+  await deleteDoc(doc(db, 'enrollments', `${classId}__${studentId}`));
+
+  // Dự phòng: xóa nếu trước đây được lưu bằng ID tự sinh
+  try {
+    const q = query(
+      collection(db, 'enrollments'),
+      where('classId', '==', classId),
+      where('studentId', '==', studentId)
+    );
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      const batch = writeBatch(db);
+      snap.docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+  } catch (err) {
+    console.warn('Fallback removeEnrollment cleanup:', err);
+  }
+};
 
 // ===================================================================
 //  CLASS TEACHERS

@@ -226,6 +226,7 @@ const mapAssignment = (id: string, d: Record<string, unknown>): Assignment => ({
   shuffleQuestions: (d.shuffleQuestions as boolean) ?? false,
   shuffleOptions: (d.shuffleOptions as boolean) ?? false,
   antiCheat: (d.antiCheat as boolean) ?? false,
+  showAnswers: (d.showAnswers as boolean) ?? false,
   assignedBy: (d.assignedBy as string) || '',
   assignedByName: d.assignedByName as string | undefined,
   assignedAt: toDate(d.assignedAt),

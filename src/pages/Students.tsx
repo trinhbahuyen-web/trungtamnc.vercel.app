@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type ChangeEvent } from 'react';
+import { useState, useEffect, useRef, type ChangeEvent, type ReactNode } from 'react';
 import * as XLSX from 'xlsx';
 import { Users, Copy, Pencil, Trash2, Wallet, Upload, FileDown, MessageSquare } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -17,6 +17,7 @@ import {
 } from '../services/dataService';
 import { ClassItem, Student, Status, Role } from '../types';
 import Modal from '../components/Modal';
+import ConfirmModal from '../components/ConfirmModal';
 
 interface FormState {
   fullName: string;
@@ -173,6 +174,23 @@ export default function Students() {
   const [requestData, setRequestData] = useState({ studentId: '', message: '' });
   const [sendingRequest, setSendingRequest] = useState(false);
 
+  // STATE: Hộp thoại xác nhận thao tác (thay thế window.confirm chống chặn popup)
+  const [confirmModal, setConfirmModal] = useState<{
+    open: boolean;
+    title: string;
+    message: ReactNode;
+    confirmText?: string;
+    onConfirm: () => Promise<void> | void;
+    loading?: boolean;
+  }>({
+    open: false,
+    title: '',
+    message: '',
+    confirmText: 'Xác nhận xóa',
+    onConfirm: () => {},
+    loading: false,
+  });
+
   useEffect(() => {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -242,39 +260,78 @@ export default function Students() {
     setShowModal(true);
   };
 
-  const handleDelete = async (s: Student) => {
-    if (!window.confirm(`Xóa học sinh "${s.fullName}"? Toàn bộ dữ liệu liên quan sẽ bị xóa.`)) return;
-    try {
-      await deleteStudent(s.id);
-      toast('Đã xóa học sinh', 'success');
-      setStudents((prev) => prev.filter((x) => x.id !== s.id));
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        next.delete(s.id);
-        return next;
-      });
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Lỗi xóa', 'error');
-    }
+  const handleDelete = (s: Student) => {
+    setConfirmModal({
+      open: true,
+      title: 'Xóa học sinh vĩnh viễn',
+      message: (
+        <div>
+          <p style={{ margin: '0 0 6px 0' }}>
+            Bạn có chắc chắn muốn xóa học sinh <strong>"{s.fullName}"</strong>?
+          </p>
+          <p style={{ margin: 0, color: '#ef4444', fontSize: '0.85rem' }}>
+            Cảnh báo: Toàn bộ dữ liệu điểm danh, ghi chú và liên kết lớp học của học sinh này sẽ bị xóa hoàn toàn khỏi hệ thống!
+          </p>
+        </div>
+      ),
+      confirmText: 'Xóa học sinh',
+      loading: false,
+      onConfirm: async () => {
+        setConfirmModal((prev) => ({ ...prev, loading: true }));
+        try {
+          await deleteStudent(s.id);
+          toast('Đã xóa học sinh', 'success');
+          setStudents((prev) => prev.filter((x) => x.id !== s.id));
+          setSelectedIds((prev) => {
+            const next = new Set(prev);
+            next.delete(s.id);
+            return next;
+          });
+          setConfirmModal((prev) => ({ ...prev, open: false, loading: false }));
+        } catch (e) {
+          toast(e instanceof Error ? e.message : 'Lỗi xóa', 'error');
+          setConfirmModal((prev) => ({ ...prev, loading: false }));
+        }
+      },
+    });
   };
 
-  const handleBulkDelete = async () => {
+  const handleBulkDelete = () => {
     const ids = [...selectedIds];
     if (ids.length === 0) {
       toast('Chưa chọn học sinh nào', 'warning');
       return;
     }
 
-    if (!window.confirm(`Xóa ${ids.length} học sinh đã chọn? Toàn bộ dữ liệu sẽ bị xóa.`)) return;
-
-    try {
-      await deleteStudents(ids);
-      toast(`Đã xóa ${ids.length} học sinh`, 'success');
-      setStudents((prev) => prev.filter((s) => !selectedIds.has(s.id)));
-      setSelectedIds(new Set());
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Lỗi xóa nhiều học sinh', 'error');
-    }
+    setConfirmModal({
+      open: true,
+      title: 'Xóa nhiều học sinh',
+      message: (
+        <div>
+          <p style={{ margin: '0 0 6px 0' }}>
+            Bạn có chắc chắn muốn xóa <strong>{ids.length} học sinh</strong> đã chọn?
+          </p>
+          <p style={{ margin: 0, color: '#ef4444', fontSize: '0.85rem' }}>
+            Cảnh báo: Toàn bộ dữ liệu điểm danh và thông tin của {ids.length} học sinh này sẽ bị xóa vĩnh viễn!
+          </p>
+        </div>
+      ),
+      confirmText: `Xóa ${ids.length} học sinh`,
+      loading: false,
+      onConfirm: async () => {
+        setConfirmModal((prev) => ({ ...prev, loading: true }));
+        try {
+          await deleteStudents(ids);
+          toast(`Đã xóa ${ids.length} học sinh`, 'success');
+          setStudents((prev) => prev.filter((s) => !selectedIds.has(s.id)));
+          setSelectedIds(new Set());
+          setConfirmModal((prev) => ({ ...prev, open: false, loading: false }));
+        } catch (e) {
+          toast(e instanceof Error ? e.message : 'Lỗi xóa nhiều học sinh', 'error');
+          setConfirmModal((prev) => ({ ...prev, loading: false }));
+        }
+      },
+    });
   };
 
   const save = async () => {
@@ -729,6 +786,17 @@ export default function Students() {
           ></textarea>
         </div>
       </Modal>
+
+      {/* Modal xác nhận thao tác xóa học sinh */}
+      <ConfirmModal
+        open={confirmModal.open}
+        onClose={() => !confirmModal.loading && setConfirmModal((prev) => ({ ...prev, open: false }))}
+        onConfirm={confirmModal.onConfirm}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        confirmText={confirmModal.confirmText}
+        loading={confirmModal.loading}
+      />
 
     </div>
   );
