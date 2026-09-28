@@ -662,12 +662,15 @@ export const deleteGradeColumnAndScores = async (
   gradebookId: string,
   columnId: string
 ) => {
+  // Delete the column document
+  await deleteDoc(doc(db, 'gradebooks', gradebookId, 'columns', columnId));
+
+  // Remove scores of this column from all student rows
   const rows = await getDocs(collection(db, 'gradebooks', gradebookId, 'rows'));
   const ops = rows.docs.map((r) => r.ref);
 
-  for (const chunk of chunkArray(ops, 440)) {
+  for (const chunk of chunkArray(ops, 400)) {
     const batch = writeBatch(db);
-    batch.delete(doc(db, 'gradebooks', gradebookId, 'columns', columnId));
     chunk.forEach((ref) => {
       batch.update(ref, {
         [`scores.${columnId}`]: deleteField(),
@@ -676,10 +679,40 @@ export const deleteGradeColumnAndScores = async (
     });
     await batch.commit();
   }
+};
 
-  if (ops.length === 0) {
-    await deleteDoc(doc(db, 'gradebooks', gradebookId, 'columns', columnId));
+export const deleteAllGradeColumnsAndScores = async (gradebookId: string) => {
+  const [colsSnap, rowsSnap] = await Promise.all([
+    getDocs(collection(db, 'gradebooks', gradebookId, 'columns')),
+    getDocs(collection(db, 'gradebooks', gradebookId, 'rows')),
+  ]);
+
+  // Delete all column documents
+  const colRefs = colsSnap.docs.map((d) => d.ref);
+  for (const chunk of chunkArray(colRefs, 400)) {
+    const batch = writeBatch(db);
+    chunk.forEach((ref) => batch.delete(ref));
+    await batch.commit();
   }
+
+  // Reset scores and average in all student rows
+  const rowRefs = rowsSnap.docs.map((d) => d.ref);
+  for (const chunk of chunkArray(rowRefs, 400)) {
+    const batch = writeBatch(db);
+    chunk.forEach((ref) => {
+      batch.update(ref, {
+        scores: {},
+        average10: null,
+        updatedAt: serverTimestamp(),
+      });
+    });
+    await batch.commit();
+  }
+
+  // Update gradebook timestamp
+  await updateDoc(doc(db, 'gradebooks', gradebookId), {
+    updatedAt: serverTimestamp(),
+  });
 };
 
 export const saveGradeRows = async (

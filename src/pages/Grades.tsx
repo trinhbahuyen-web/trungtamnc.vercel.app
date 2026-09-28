@@ -1,12 +1,14 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, ReactNode } from 'react';
 import type { ChangeEvent, ClipboardEvent } from 'react';
-import { FileText, Save, Plus, Trash2, Search, FileDown, Settings } from 'lucide-react';
+import { FileText, Save, Plus, Trash2, Search, FileDown, Settings, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import ConfirmModal from '../components/ConfirmModal';
 import {
   addGradeColumn,
   calcGradeAverage10,
   deleteGradeColumnAndScores,
+  deleteAllGradeColumnsAndScores,
   getClassById,
   getClasses,
   getClassRoster,
@@ -138,6 +140,26 @@ export default function Grades() {
   const [classSearchTerm, setClassSearchTerm] = useState('');
   const [isClassDropdownOpen, setIsClassDropdownOpen] = useState(false);
 
+  // Modal xác nhận thao tác (thay thế window.confirm chống bị chặn trên iframe/trình duyệt)
+  const [confirmModal, setConfirmModal] = useState<{
+    open: boolean;
+    title: string;
+    message: ReactNode;
+    confirmText?: string;
+    cancelText?: string;
+    variant?: 'danger' | 'warning' | 'primary';
+    onConfirm: () => Promise<void> | void;
+    loading?: boolean;
+  }>({
+    open: false,
+    title: '',
+    message: '',
+    confirmText: 'Xác nhận xóa',
+    variant: 'danger',
+    onConfirm: () => {},
+    loading: false,
+  });
+
   useEffect(() => {
     if (!user) return;
     getClasses(user).then(setClasses).catch((e) => toast(e.message, 'error'));
@@ -168,7 +190,24 @@ export default function Grades() {
   }, [classes, toast, user]);
 
   function handleSelectClassItem(c: ClassItem) {
-    if (dirtyCount > 0 && !window.confirm('Bạn có điểm chưa lưu. Chuyển lớp sẽ bỏ thay đổi này. Tiếp tục?')) return;
+    if (dirtyCount > 0) {
+      setConfirmModal({
+        open: true,
+        title: 'Có thay đổi chưa lưu',
+        message: 'Bạn có điểm chưa lưu. Chuyển lớp sẽ bỏ qua thay đổi này. Bạn có muốn tiếp tục không?',
+        confirmText: 'Bỏ lưu & Chuyển lớp',
+        variant: 'warning',
+        onConfirm: () => {
+          setConfirmModal((prev) => ({ ...prev, open: false }));
+          setSelectedClass(c.id);
+          setClassSearchTerm(c.className);
+          setIsClassDropdownOpen(false);
+          setQ('');
+          loadClass(c.id);
+        },
+      });
+      return;
+    }
     setSelectedClass(c.id);
     setClassSearchTerm(c.className);
     setIsClassDropdownOpen(false);
@@ -190,11 +229,85 @@ export default function Grades() {
     } finally { setColumnSaving(false); }
   }
 
-  async function deleteColumn(column: GradeColumn) {
+  // XÓA 1 CỘT ĐIỂM (DÙNG MODAL XÁC NHẬN - CHỐNG BỊ TRÌNH DUYỆT CHẶN)
+  function deleteColumn(column: GradeColumn) {
     if (!gradebookId || !selectedClass) return;
-    if (!window.confirm(`Xóa cột "${column.name}"? Toàn bộ điểm của học sinh trong cột này cũng sẽ bị xóa!`)) return;
-    setColumnSaving(true);
-    try { await deleteGradeColumnAndScores(gradebookId, column.id); await loadClass(selectedClass); } finally { setColumnSaving(false); }
+
+    setConfirmModal({
+      open: true,
+      title: `Xóa cột "${column.name}"?`,
+      message: (
+        <div>
+          <p style={{ margin: '0 0 10px 0', fontSize: '0.95rem' }}>
+            Thầy/Cô có chắc chắn muốn xóa cột <strong>"{column.name}"</strong> ({TYPE_LABEL[column.type]}, Hệ số {column.weight}) không?
+          </p>
+          <p style={{ margin: 0, color: '#dc2626', fontSize: '0.875rem' }}>
+            ⚠️ Toàn bộ điểm của tất cả học sinh trong cột này cũng sẽ bị xóa. Điểm trung bình môn sẽ được tính toán lại ngay sau đó.
+          </p>
+        </div>
+      ),
+      confirmText: 'Xác nhận xóa cột',
+      variant: 'danger',
+      onConfirm: async () => {
+        setConfirmModal((prev) => ({ ...prev, loading: true }));
+        setColumnSaving(true);
+        try {
+          await deleteGradeColumnAndScores(gradebookId, column.id);
+          toast(`Đã xóa cột "${column.name}" thành công!`, 'success');
+          setConfirmModal((prev) => ({ ...prev, open: false, loading: false }));
+          await loadClass(selectedClass);
+        } catch (e) {
+          toast(e instanceof Error ? e.message : 'Lỗi khi xóa cột', 'error');
+          setConfirmModal((prev) => ({ ...prev, loading: false }));
+        } finally {
+          setColumnSaving(false);
+        }
+      },
+    });
+  }
+
+  // XÓA TẤT CẢ CỘT ĐỂ CHUYỂN SANG NĂM HỌC MỚI (QUÁ TRÌNH MỚI)
+  function deleteAllColumns() {
+    if (!gradebookId || !selectedClass) return;
+    if (columns.length === 0) {
+      toast('Lớp chưa có cột điểm nào để xóa.', 'info');
+      return;
+    }
+
+    setConfirmModal({
+      open: true,
+      title: 'Chuyển sang năm học mới: Xóa toàn bộ cột?',
+      message: (
+        <div>
+          <p style={{ margin: '0 0 8px 0', fontSize: '0.95rem' }}>
+            Lớp <strong>{selectedCls?.className}</strong> đang có <strong>{columns.length} cột điểm</strong> ({columns.map(c => c.name).join(', ')}).
+          </p>
+          <p style={{ margin: '0 0 12px 0', color: '#b91c1c', fontSize: '0.875rem', fontWeight: 500 }}>
+            ⚠️ Thao tác này sẽ xóa sạch toàn bộ {columns.length} cột điểm và điểm số cũ của giai đoạn hè để làm mới bảng điểm cho năm học mới. Danh sách học sinh trong lớp vẫn được giữ nguyên.
+          </p>
+          <div style={{ padding: '8px 12px', background: '#ecfdf5', borderRadius: '8px', border: '1px solid #a7f3d0', color: '#065f46', fontSize: '0.85rem' }}>
+            💡 <strong>Lưu ý:</strong> Thầy/Cô có thể bấm <strong>"Xuất báo cáo"</strong> (nút màu xanh lá góc trên) để lưu lại file Word điểm số hè trước khi xóa nếu cần lưu trữ.
+          </div>
+        </div>
+      ),
+      confirmText: `Xóa toàn bộ ${columns.length} cột hè`,
+      variant: 'danger',
+      onConfirm: async () => {
+        setConfirmModal((prev) => ({ ...prev, loading: true }));
+        setColumnSaving(true);
+        try {
+          await deleteAllGradeColumnsAndScores(gradebookId);
+          toast(`Đã xóa sạch các cột điểm hè! Bảng điểm lớp ${selectedCls?.className} đã sẵn sàng cho năm học mới.`, 'success');
+          setConfirmModal((prev) => ({ ...prev, open: false, loading: false }));
+          await loadClass(selectedClass);
+        } catch (e) {
+          toast(e instanceof Error ? e.message : 'Lỗi khi xóa các cột', 'error');
+          setConfirmModal((prev) => ({ ...prev, loading: false }));
+        } finally {
+          setColumnSaving(false);
+        }
+      },
+    });
   }
 
   function updateScore(studentId: string, columnId: string, raw: string) {
@@ -365,9 +478,9 @@ export default function Grades() {
           <div className="card" style={{ marginBottom: 15 }}>
             <div className="card-body" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, padding: '10px 15px' }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, color: '#374151' }}>
-                <Settings size={16} /> Quản lý cột điểm
+                <Settings size={16} /> Quản lý cột điểm ({columns.length} cột)
               </span>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <button className="btn btn-secondary btn-sm" onClick={() => addColumn('REGULAR')} disabled={columnSaving}>
                   <Plus size={14}/> Cột Thường xuyên
                 </button>
@@ -377,6 +490,25 @@ export default function Grades() {
                 <button className="btn btn-primary btn-sm" style={{ background: '#dc2626', borderColor: '#dc2626' }} onClick={() => addColumn('FINAL')} disabled={columnSaving}>
                   <Plus size={14}/> Cột Cuối kỳ
                 </button>
+                {columns.length > 0 && (
+                  <button
+                    className="btn btn-sm"
+                    style={{
+                      background: '#fee2e2',
+                      color: '#dc2626',
+                      borderColor: '#fca5a5',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 5,
+                      fontWeight: 500,
+                    }}
+                    onClick={deleteAllColumns}
+                    disabled={columnSaving}
+                    title="Xóa toàn bộ các cột điểm hè để chuyển sang năm học mới"
+                  >
+                    <Trash2 size={14} /> Chuyển năm học mới (Xóa hết cột hè)
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -389,20 +521,37 @@ export default function Grades() {
                   <th className="col-stt" style={{ width: '50px', textAlign: 'center', verticalAlign: 'middle' }}>STT</th>
                   <th className="sticky-student" style={{ minWidth: '180px', verticalAlign: 'middle' }}>Học sinh</th>
                   {columns.map(c => (
-                    <th key={c.id} style={{ textAlign: 'center', minWidth: '85px', verticalAlign: 'middle' }}>
-                      <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
-                        <span>{c.name}</span>
+                    <th key={c.id} style={{ textAlign: 'center', minWidth: '90px', verticalAlign: 'middle', padding: '8px 4px' }}>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}>
+                        <span style={{ fontWeight: 600 }}>{c.name}</span>
                         <button 
-                          className="btn btn-ghost btn-sm" 
-                          style={{ padding: 0, height: 'auto', color: '#ef4444', border: 'none', background: 'transparent' }} 
-                          onClick={() => deleteColumn(c)} 
-                          title="Xóa cột này"
+                          type="button"
+                          className="btn-ghost"
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            width: '22px',
+                            height: '22px',
+                            padding: 0,
+                            color: '#ef4444',
+                            border: 'none',
+                            background: 'transparent',
+                            cursor: 'pointer',
+                            borderRadius: '4px',
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteColumn(c);
+                          }} 
+                          title={`Xóa cột "${c.name}"`}
+                          aria-label={`Xóa cột ${c.name}`}
                         >
-                          <Trash2 size={13} />
+                          <Trash2 size={14} />
                         </button>
                       </div>
                       <br/>
-                      <span style={{ fontSize: '0.7rem', fontWeight: 'normal', color: 'var(--text-muted)' }}>HS: {c.weight}</span>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 'normal', color: 'var(--text-muted)' }}>HS: {c.weight}</span>
                     </th>
                   ))}
                   <th style={{ width: '80px', textAlign: 'center', color: 'var(--primary)', verticalAlign: 'middle' }}>T.Bình</th>
@@ -439,6 +588,19 @@ export default function Grades() {
           </div>
         </>
       )}
+
+      {/* Modal xác nhận thao tác (Xóa 1 cột / Xóa tất cả cột hè / Bỏ lưu khi chuyển lớp) */}
+      <ConfirmModal
+        open={confirmModal.open}
+        onClose={() => !confirmModal.loading && setConfirmModal((prev) => ({ ...prev, open: false }))}
+        onConfirm={confirmModal.onConfirm}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        confirmText={confirmModal.confirmText}
+        cancelText={confirmModal.cancelText}
+        variant={confirmModal.variant}
+        loading={confirmModal.loading}
+      />
     </div>
   );
 }

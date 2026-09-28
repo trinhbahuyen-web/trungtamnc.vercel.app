@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, ReactNode } from 'react';
 import { CheckSquare, ClipboardList, Save, Check, X, FileText, Search, FileSpreadsheet, Trash2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import ConfirmModal from '../components/ConfirmModal';
 import { db } from '../config/firebase';
 import { collection, getDocs, query, where, writeBatch } from 'firebase/firestore'; 
 import * as XLSX from 'xlsx';
@@ -51,6 +52,26 @@ export default function Attendance() {
 
   const [recentSessions, setRecentSessions] = useState<{sessionNumber: number, date: string}[]>([]);
   const [refreshRecentTrigger, setRefreshRecentTrigger] = useState(0);
+
+  // Modal xác nhận thao tác (thay thế window.confirm chống bị chặn trên trình duyệt/mobile)
+  const [confirmModal, setConfirmModal] = useState<{
+    open: boolean;
+    title: string;
+    message: ReactNode;
+    confirmText?: string;
+    cancelText?: string;
+    variant?: 'danger' | 'warning' | 'primary';
+    onConfirm: () => Promise<void> | void;
+    loading?: boolean;
+  }>({
+    open: false,
+    title: '',
+    message: '',
+    confirmText: 'Xác nhận xóa',
+    variant: 'danger',
+    onConfirm: () => {},
+    loading: false,
+  });
 
   useEffect(() => {
     if (!selectedClass) {
@@ -187,39 +208,60 @@ export default function Attendance() {
   }
 
   // TÍNH NĂNG: XÓA TẬN GỐC DỮ LIỆU ĐIỂM DANH DO LỠ BẤM NHẦM
-  async function clearAttendance() {
+  function clearAttendance() {
     if (!selectedClass) return;
-    if (!window.confirm(`XÓA ĐIỂM DANH LỚP NÀY?\n\nHành động này sẽ XÓA SẠCH toàn bộ dữ liệu điểm danh của ngày ${fmtDate(date)}.\nKhôi phục lại lớp về trạng thái "Chưa từng điểm danh".`)) return;
 
-    setSaving(true);
-    try {
-      const snap = await getDocs(
-        query(
-          collection(db, 'attendance'),
-          where('classId', '==', selectedClass),
-          where('date', '==', date)
-        )
-      );
+    setConfirmModal({
+      open: true,
+      title: 'Xóa điểm danh buổi này?',
+      message: (
+        <div>
+          <p style={{ margin: '0 0 8px 0' }}>
+            Hành động này sẽ <strong>xóa sạch toàn bộ dữ liệu điểm danh ngày {fmtDate(date)}</strong> của lớp này.
+          </p>
+          <p style={{ margin: 0, color: '#dc2626', fontSize: '0.875rem' }}>
+            ⚠️ Lớp sẽ được khôi phục về trạng thái "Chưa từng điểm danh" trong ngày này.
+          </p>
+        </div>
+      ),
+      confirmText: 'Xóa dữ liệu điểm danh',
+      variant: 'danger',
+      onConfirm: async () => {
+        setConfirmModal((prev) => ({ ...prev, loading: true }));
+        setSaving(true);
+        try {
+          const snap = await getDocs(
+            query(
+              collection(db, 'attendance'),
+              where('classId', '==', selectedClass),
+              where('date', '==', date)
+            )
+          );
 
-      if (snap.empty) {
-        toast('Chưa có dữ liệu để xóa!', 'warning');
-        setSaving(false);
-        return;
-      }
+          if (snap.empty) {
+            toast('Chưa có dữ liệu để xóa!', 'warning');
+            setSaving(false);
+            setConfirmModal((prev) => ({ ...prev, open: false, loading: false }));
+            return;
+          }
 
-      const batch = writeBatch(db);
-      snap.docs.forEach(d => batch.delete(d.ref));
-      await batch.commit();
+          const batch = writeBatch(db);
+          snap.docs.forEach((d) => batch.delete(d.ref));
+          await batch.commit();
 
-      toast('Đã xóa dữ liệu điểm danh thành công! Lớp đã được trả về trạng thái trống.', 'success');
-      setHasSavedData(false);
-      setRefreshRecentTrigger(t => t + 1);
-      loadRosterAndAttendance(); // Tải lại giao diện về mặc định
-    } catch (e) {
-      toast('Lỗi khi xóa điểm danh', 'error');
-    } finally {
-      setSaving(false);
-    }
+          toast('Đã xóa dữ liệu điểm danh thành công! Lớp đã được trả về trạng thái trống.', 'success');
+          setHasSavedData(false);
+          setRefreshRecentTrigger((t) => t + 1);
+          setConfirmModal((prev) => ({ ...prev, open: false, loading: false }));
+          loadRosterAndAttendance();
+        } catch (e) {
+          toast('Lỗi khi xóa điểm danh', 'error');
+          setConfirmModal((prev) => ({ ...prev, loading: false }));
+        } finally {
+          setSaving(false);
+        }
+      },
+    });
   }
 
   const exportAttendanceWord = () => {
@@ -744,6 +786,19 @@ export default function Attendance() {
           </div>
         </div>
       )}
+
+      {/* Modal xác nhận thao tác (Xóa điểm danh) */}
+      <ConfirmModal
+        open={confirmModal.open}
+        onClose={() => !confirmModal.loading && setConfirmModal((prev) => ({ ...prev, open: false }))}
+        onConfirm={confirmModal.onConfirm}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        confirmText={confirmModal.confirmText}
+        cancelText={confirmModal.cancelText}
+        variant={confirmModal.variant}
+        loading={confirmModal.loading}
+      />
     </div>
   );
 }
